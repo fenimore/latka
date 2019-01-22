@@ -1,0 +1,20 @@
+[package]
+name = "kafka"
+version = "0.1.0"
+authors = ["Fenimore Love <exorable.ludos@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "consumer"
+path = "src/consumer.rs"
+
+[[bin]]
+name = "producer"
+path = "src/producer.rs"
+
+[[bin]]
+name = "broker"
+path = "src/broker.rs"
+
+[dependencies]
+byteorder = "1"
