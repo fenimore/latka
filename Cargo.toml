@@ -18,3 +18,4 @@ path = "src/broker.rs"
 
 [dependencies]
 byteorder = "1"
+getopts = "0.2.18"

@@ -2,59 +2,80 @@
 #![allow(unused_imports)]
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
-use std::io::{Seek, SeekFrom, BufRead, BufReader, BufWriter};
+extern crate byteorder;
+
+use std::env;
+use std::io;
+use std::io::{Seek, SeekFrom, BufRead, BufReader, BufWriter, LineWriter};
 use std::io::{Write, Lines};
 use std::path::Path;
 use std::fs::{OpenOptions, File};
 use std::net::{TcpListener, TcpStream};
-
-extern crate byteorder;
-
 use std::io::Cursor;
+
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
+use getopts::Options;
 
 
+static USAGE: &str = "Stream consumer.";
 const MESSAGE_PREFIX: u8 = 42;
 
 
-// struct Consumer {
-//     offset: u64,
-//     reader: Lines<BufReader<File>>,
-// }
-
-// impl Consumer {
-//     fn consume(&mut self) -> String {
-//         let line = match self.reader.next() {
-//             Some(res) => res,
-//             None => Ok(String::from("")),
-//         }.unwrap();
-
-//         self.offset = line.len() as u64 + self.offset + 1;  // add one for newline
-//         line
-//     }
-// }
-
-
 fn main() {
-    let mut stream  = TcpStream::connect("127.0.0.1:7070").unwrap();
-    stream.write(&[42]).unwrap();
+    let mut opts = Options::new();
+    opts.optopt("t", "topic", "the stream topic (not implemented)", "topic");
+    opts.optopt("o", "offset", "the offset to read stream from", "off");
+    opts.optopt("p", "port", "broker host port (assume host is localhost)", "port");
+    let args: Vec<_> = env::args().collect();
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(_) => {println!("{}", USAGE); return},
+    };
+    let port: u16 = match matches.opt_str("p") {
+        Some(s) => s.parse().expect("Couldn't parse Port"),
+        None => 7070,
+    };
+    let mut offset: u32 = match matches.opt_str("o") {
+        Some(s) => s.parse().expect("Couldn't parse offset"),
+        None => 0,
+    };
 
-    let desired_offset: u32 = 4;
+    let mut stream  = match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(s) => s,
+        Err(e) => panic!(e),
+    };
+    stream.write(&[MESSAGE_PREFIX]).unwrap();
+
     let mut buffer = vec![];
-    buffer.write_u32::<BigEndian>(desired_offset).unwrap();
-    stream.write(buffer.as_slice()).unwrap();
+    buffer.write_u32::<BigEndian>(offset).unwrap();
+    let num_written = stream.write(buffer.as_slice()).unwrap();
+    if num_written != 4 {
+        panic!("Can't communicate with broker");
+    }
 
-    let mut reader = BufReader::new(stream).lines();
+    let mut reader = BufReader::new(stream);
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
 
-    // TODO: keep track of offset
 
-    let buf = String::from("");
+    let mut line = String::new(); // may also use with_capacity if you can guess
     loop {
-        //buf.clear();
-        let line = match reader.next() {
-            Some(l) => l.unwrap(),
-            None => break,
+        let num_read = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) =>{
+                writeln!(writer, "{} {:?}", offset, e).unwrap();
+                break
+            },
         };
-        println!("{:?}", line);
+        if num_read == 0 {
+            break
+        }
+
+        let message = format!("{}: {}", offset, line);
+        //writer.write(&message.as_bytes()).unwrap();
+        write!(writer, "{}", message).unwrap();
+
+        offset += line.len() as u32;
+        line.clear(); // clear to reuse the buffer
     }
 }

@@ -12,102 +12,114 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 #![feature(bufreader_buffer)]
+use std::env;
+use std::result::Result;
+use std::convert::AsRef;
 use std::io::{Seek, SeekFrom, BufReader, BufWriter};
-use std::io::{Write, Lines, Read, BufRead};
+use std::io::{Write, Lines, Read, BufRead, Error};
 use std::path::Path;
 use std::fs::{OpenOptions, File};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
+use getopts::Options;
+
+static USAGE: &str = "Streaming Broker.";
+static SEGMENT_PATH: &str = "topic.txt";
+
+const CONSUMER_MESSAGE_PREFIX: u8 = 42;
+const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
 
-const CONSUMER: u8 = 42;
-const PRODUCER: u8 = 78;
-
-
-
-fn handle_producer(stream: TcpStream) {
+// TODO: handle creating the file (or segment) by the Broker
+// and have the path passed to handle_producer
+fn handle_producer(stream: TcpStream, global_offset: Arc<Mutex<u32>>) -> Result<(), Error> {
     println!("Handle Producer");
 
-    // TODO: handle creating the file (or segment) by the Broker
-    // and have the path passed to handle_producer
-    let f: File = OpenOptions::new().create(true).append(true)
-        .read(false).open("topic.txt")
-        .expect("open write file descriptor");
+    let f: File = OpenOptions::new().append(true).read(false).open(SEGMENT_PATH)?;
     let mut producer = BufWriter::new(f);
 
-    let mut stream_reader = BufReader::new(stream).lines();
+    let mut reader = BufReader::new(stream);
 
+    let mut buffer = String::new();
     loop {
-        let next_line = stream_reader.next();
-        let result   = match next_line {
-            Some(res) => res,
-            None => break,
-        };
-        let line = match result {
-            Ok(l) => l,
-            Err(e) =>{println!("{:?}", e); break},
-        };
-        producer.write(line.as_bytes()).unwrap();
-        producer.write(&['\n' as u8]).unwrap();
-        // I could concat() these two &[u8] slices, but it's
-        // a buffered reader, so it's just extra overhead
-        if producer.buffer().len() > 1024 {
-            // Flush the internal Buffer if it gets too large
-            producer.flush().ok();
+        let n = reader.read_line(&mut buffer)?;
+        if n == 0 {
+            break
+        } else {
+            let mut pointer = global_offset.lock().unwrap();
+            *pointer += buffer.len() as u32;
         }
+
+        write!(producer, "{}", buffer).unwrap();
+
+        buffer.clear();
     }
-    // producer flushes when it drops out of scope
-}
+    Ok(())
+}    // producer flushes when it drops out of scope
 
-
-// TODO: have it return error
-fn handle_consumer(mut stream: TcpStream) {
-    println!("Handle Consumer!");
+fn handle_consumer(mut stream: TcpStream, global_offset: Arc<Mutex<u32>>) ->  Result<(), Error> {
     let offset = match stream.read_u32::<BigEndian>() {
-        Ok(o) => o,
+        Ok(o) => {
+            let global_offset = global_offset.lock().unwrap();
+            if *global_offset < o {
+                return Ok(()); // TODO: custom error
+            }
+            o
+        },
         Err(e) => {
-            println!("Couldn't read offset!");
-            return
+            return Err(e);
         },
     };
     println!("Consumer at offset: {:?}", offset);
 
-    let (offset, mut consumer): (u64, Lines<BufReader<File>>) = {
-        let f = OpenOptions::new().write(false)
-            .read(true).open("topic.txt")
-            .expect("Error opening consumer file");
+    let mut writer = BufWriter::new(stream);
+    let (offset, mut reader): (u64, BufReader<File>) = {
+        let f = OpenOptions::new().write(false).read(true).open("topic.txt")?;
         let mut reader = BufReader::new(f);
-        let off = reader.seek(SeekFrom::Start(offset as u64)).expect("Couldn't seek to offset");
-        (off, reader.lines())
+        let off = reader.seek(SeekFrom::Start(offset as u64))?;
+        (off, reader)
     };
 
-    // todo: use syscall `sendfile` to copy directly from file to socket
+    // TODO: use syscall `sendfile` to copy directly from file to socket
+    let mut buffer = String::new();
     loop {
-        let line = match consumer.next() {
-            Some(x) => x,
-            None => { break }
-        }.unwrap();
-        stream.write(line.as_bytes()).unwrap();
-        stream.write(&['\n' as u8]).unwrap();
+        let n = reader.read_line(&mut buffer)?;
+        if n == 0 {
+            break
+        }
+
+        write!(writer, "{}", buffer).unwrap();
+        buffer.clear();
     }
+    Ok(())
 }
 
 
 
-fn main() {
-    println!("Starting broker on 7070");
-
-    {
-        // Set up topic log for development
-        let _ = OpenOptions::new().write(true).truncate(true).open("topic.txt").expect("truncate");
-
-    }
-
-    // TODO: parameterize the Port
-    let listener = match TcpListener::bind("127.0.0.1:7070") {
-        Ok(lst) => lst,
-        Err(e) => panic!("Couldn't bind server"),
+fn main() -> Result<(), Error>{
+    let mut opts = Options::new();
+    opts.optopt("p", "port", "broker port", "port");
+    opts.optflag("t", "truncate", "truncate the topic");
+    let args: Vec<_> = env::args().collect();
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(e) => return Ok(()),
     };
+    if matches.opt_present("t") {
+        let _  = OpenOptions::new().create(true).write(true).truncate(true).open("topic.txt")?;
+    };
+    let port: u16 = match matches.opt_str("p") {
+        Some(s) => s.parse().expect("Couldn't parse Port"),
+        None => 7070,
+    };
+
+    println!("Broker listening on  127.0.0.1:{}", port);
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+
+    let global_offset = Arc::new(Mutex::new(0_u32));
 
     // accept connections and process them serially
     for incoming in listener.incoming() {
@@ -118,9 +130,26 @@ fn main() {
         let mut message_type = [0; 1];
         let _ = stream.read(&mut message_type).unwrap();
         match message_type[0] {
-            CONSUMER => handle_consumer(stream),
-            PRODUCER => handle_producer(stream),
-            _ => println!("Nope"),
+            CONSUMER_MESSAGE_PREFIX => {
+                let global_offset = global_offset.clone();
+                thread::spawn(|| {
+                    match handle_consumer(stream, global_offset) {
+                        Ok(_) => {;},
+                        Err(e) => println!("ERROR: {:?}", e),
+                    };
+                });
+            },
+            PRODUCER_MESSAGE_PREFIX => {
+                let global_offset = global_offset.clone();
+                thread::spawn(|| {
+                    match handle_producer(stream, global_offset) {
+                        Ok(_) => {;},
+                        Err(e) => println!("ERROR: {:?}", e),
+                    };
+                });
+            },
+            _ => println!("Unrecognizable Message Prefix {}", message_type[0]),
         }
-    }
+    };
+    return Ok(());
 }
