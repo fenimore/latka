@@ -1,3 +1,13 @@
+// Because  of  limitations  in  existing  systems,  we  developed  a  new
+//     messaging-based  log  aggregator  Kafka.  We  first  introduce  the
+//     basic concepts in Kafka. A stream of messages of a particular type
+//     is defined by a topic. A producer
+//     can publish messages to a topic.
+//     The  published  messages  are  then  stored  at  a  set  of  servers  called
+//     brokers. A consumer can subscribe to one or more topics from the
+//     brokers,  and  consume  the  subscribed  messages  by  pulling  data
+//     from the brokers.
+
 // Simple  storage:  Kafka  has  a  very  simple  storage  layout.  Each
 //     partition of a topic corresponds to a logical log. Physically, a log
 //     is  implemented  as  a  set  of  segment  files  of  approximately  the
@@ -15,6 +25,8 @@
 use std::env;
 use std::result::Result;
 use std::convert::AsRef;
+use std::io;
+use std::fs;
 use std::io::{Seek, SeekFrom, BufReader, BufWriter};
 use std::io::{Write, Lines, Read, BufRead, Error};
 use std::path::Path;
@@ -27,35 +39,65 @@ use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use getopts::Options;
 
 static USAGE: &str = "Streaming Broker.";
+static TOPIC: &str = "topic";
 static SEGMENT_PATH: &str = "topic.txt";
 
+const SEGMENT_SIZE: u32 = 1024;
 const CONSUMER_MESSAGE_PREFIX: u8 = 42;
 const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
 
+
+
+fn get_segment(topic: &String, name: String) -> io::Result<File>{
+    //let name = format!("{:0>21}", n);
+    let log_path = Path::new(topic).join(name.as_str());
+    let log = OpenOptions::new().create(true).append(true).open(log_path)?;
+
+    Ok(log)
+}
+
+
+
 // TODO: handle creating the file (or segment) by the Broker
 // and have the path passed to handle_producer
-fn handle_producer(stream: TcpStream, global_offset: Arc<Mutex<u32>>) -> Result<(), Error> {
+fn handle_producer(
+    topic: String, stream: TcpStream, offset: Arc<Mutex<u32>>, last_seg: Arc<Mutex<u32>>
+) -> Result<(), Error> {
+
     println!("Handle Producer");
-
-    let f: File = OpenOptions::new().append(true).read(false).open(SEGMENT_PATH)?;
-    let mut producer = BufWriter::new(f);
-
     let mut reader = BufReader::new(stream);
 
-    let mut buffer = String::new();
-    loop {
-        let n = reader.read_line(&mut buffer)?;
-        if n == 0 {
-            break
-        } else {
-            let mut pointer = global_offset.lock().unwrap();
-            *pointer += buffer.len() as u32;
+    'outer: loop {
+        let seg_name = {
+            let n = last_seg.lock().unwrap();
+            format!("{:0>21}.log", *n)
+        };
+        let segment_file = get_segment(&topic, seg_name)?;
+        let mut segment = BufWriter::new(segment_file);
+
+        let mut buffer = String::new();
+        'inner: loop {
+            let n = reader.read_line(&mut buffer)?;
+            if n == 0 {
+                break 'outer;
+            } else {
+                let mut off = offset.lock().unwrap();
+                *off += buffer.len() as u32;
+            }
+            write!(segment, "{}", buffer).unwrap();
+            buffer.clear();
+
+            let mut seg = last_seg.lock().unwrap();
+            let off = offset.lock().unwrap();
+            if ((*seg + 1) * SEGMENT_SIZE) < *off {
+                // increment latest segment
+                // close current segment and continue with next segment
+                *seg += 1;
+                continue 'outer;
+            }
+
         }
-
-        write!(producer, "{}", buffer).unwrap();
-
-        buffer.clear();
     }
     Ok(())
 }    // producer flushes when it drops out of scope
@@ -83,7 +125,7 @@ fn handle_consumer(mut stream: TcpStream, global_offset: Arc<Mutex<u32>>) ->  Re
         (off, reader)
     };
 
-    // TODO: use syscall `sendfile` to copy directly from file to socket
+    // TODO: use sysc)all `sendfile` to copy directly from file to socket
     let mut buffer = String::new();
     loop {
         let n = reader.read_line(&mut buffer)?;
@@ -97,19 +139,49 @@ fn handle_consumer(mut stream: TcpStream, global_offset: Arc<Mutex<u32>>) ->  Re
     Ok(())
 }
 
+fn find_latest_segment(topic: String) -> io::Result<u32> {
+    let mut largest_offset: u32 = 0;
+    for entry in fs::read_dir(topic)? {
+        let file = entry?;
+        let path = file.path();
+        let as_path = path.as_path();
+        let stem = as_path.file_stem().unwrap();
+        let str_stem = stem.to_str().unwrap();
+        let parsed = str_stem.parse::<u32>().unwrap();
 
+        largest_offset = if parsed > largest_offset {
+            parsed
+        } else {
+            largest_offset
+        }
+    }
+    Ok(largest_offset)
+}
 
 fn main() -> Result<(), Error>{
     let mut opts = Options::new();
     opts.optopt("p", "port", "broker port", "port");
-    opts.optflag("t", "truncate", "truncate the topic");
+    opts.optopt("t", "topic", "topic name", "topic");
+    opts.optflag("c", "create", "create topic");
+    opts.optflag("h", "help", "print usage");
     let args: Vec<_> = env::args().collect();
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(e) => return Ok(()),
     };
-    if matches.opt_present("t") {
-        let _  = OpenOptions::new().create(true).write(true).truncate(true).open("topic.txt")?;
+    if matches.opt_present("h") {
+        println!("Yup");
+        return Ok(())
+    }
+    let topic = match matches.opt_str("t") {
+        Some(s) => s,
+        None => String::from("topic"),
+    };
+    if matches.opt_present("c") {
+        // uhhh
+        fs::create_dir(&topic)?;
+        let init_seg = format!("{:0>21}.log", 0);
+        let _ = get_segment(&topic, init_seg)?;
     };
     let port: u16 = match matches.opt_str("p") {
         Some(s) => s.parse().expect("Couldn't parse Port"),
@@ -119,7 +191,9 @@ fn main() -> Result<(), Error>{
     println!("Broker listening on  127.0.0.1:{}", port);
     let listener = TcpListener::bind(("127.0.0.1", port))?;
 
-    let global_offset = Arc::new(Mutex::new(0_u32));
+    let latest = find_latest_segment(topic.clone())?;
+    let latest_segment = Arc::new(Mutex::new(latest));
+    let topic_offset = Arc::new(Mutex::new(0_u32));
 
     // accept connections and process them serially
     for incoming in listener.incoming() {
@@ -131,18 +205,20 @@ fn main() -> Result<(), Error>{
         let _ = stream.read(&mut message_type).unwrap();
         match message_type[0] {
             CONSUMER_MESSAGE_PREFIX => {
-                let global_offset = global_offset.clone();
+                let topic_offset = topic_offset.clone();
                 thread::spawn(|| {
-                    match handle_consumer(stream, global_offset) {
+                    match handle_consumer(stream, topic_offset) {
                         Ok(_) => {;},
                         Err(e) => println!("ERROR: {:?}", e),
                     };
                 });
             },
             PRODUCER_MESSAGE_PREFIX => {
-                let global_offset = global_offset.clone();
+                let topic_offset = topic_offset.clone();
+                let latest_segment = latest_segment.clone();
+                let top = topic.clone();
                 thread::spawn(|| {
-                    match handle_producer(stream, global_offset) {
+                    match handle_producer(top, stream, topic_offset, latest_segment) {
                         Ok(_) => {;},
                         Err(e) => println!("ERROR: {:?}", e),
                     };

@@ -12,8 +12,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "kafka"
-version = "0.1.0"
+name = "latka"
+version = "0.0.1"
 dependencies = [
  "byteorder 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "getopts 0.2.18 (registry+https://github.com/rust-lang/crates.io-index)",
