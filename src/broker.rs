@@ -48,6 +48,48 @@ const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
 
 
+struct Partition {
+    topic_name: String,
+    number: u32,
+    path: String,
+    largest_offset: Arc<Mutex<u32>>,
+    active_segment: Arc<Mutex<u32>>,
+}
+
+// a partition is a logical log, physically divided into segments
+impl Partition {
+    fn new(name: String, num: u32) -> Partition {
+        let partition_path = format!("{}/{}-{}", name, name, num);
+        Partition {
+            topic_name: name,
+            number: num,
+            path: partition_path,
+            latest_segment: Arc::new(Mutex::new(0_u32)),
+            largest_offset: Arc::new(Mutex::new(0_u32)),
+        }
+    }
+
+    fn create_directory(&self) -> io::Result<()> {
+        fs::create_dir(self.topic_name.as_str())?;
+        fs::create_dir(self.path.as_str())?;
+        self.get_latest_segment()?;
+
+        Ok(())
+    }
+
+    fn get_latest_segment(&self) -> io::Result<File> {
+        let seg_name = {
+            let n = self.latest_segment.lock().unwrap();
+            format!("{:0>10}.log", *n)
+        };
+
+        let seg_path = Path::new(self.path.as_str()).join(seg_name.as_str());
+        let segment = OpenOptions::new().create(true).append(true).open(seg_path)?;
+        Ok(segment)
+    }
+}
+
+
 
 fn get_segment(topic: &String, name: String) -> io::Result<File>{
     //let name = format!("{:0>21}", n);
