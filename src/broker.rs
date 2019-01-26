@@ -47,11 +47,11 @@ Options:
 ";
 
 
-const SEGMENT_SIZE: u32 = 32;
+const SEGMENT_SIZE: u64 = 32;
 const CONSUMER_MESSAGE_PREFIX: u8 = 42;
 const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
-type Offset = u32;
+type Offset = u64;
 
 fn get_segment(topic: &String, name: String) -> io::Result<File>{
     //let name = format!("{:0>21}", n);
@@ -74,9 +74,9 @@ fn sorted_segments(topic: &String) -> io::Result<Vec<Offset>> {
 }
 
 
-fn scan_topic(topic: String) -> io::Result<(Offset, u32)> {
+fn scan_topic(topic: String) -> io::Result<(Offset, usize)> {
     let mut largest_base_offset: Offset = 0;
-    let mut segment_count: u32 = 0;
+    let mut segment_count: usize = 0;
     for entry in fs::read_dir(topic)? {
         let file = entry?;
         let path = file.path();
@@ -98,7 +98,7 @@ fn scan_topic(topic: String) -> io::Result<(Offset, u32)> {
 
 fn handle_producer(
     topic: String, stream: TcpStream,
-    offset: Arc<Mutex<Offset>>, last_seg: Arc<Mutex<Offset>>, seg_count: Arc<Mutex<u32>>
+    offset: Arc<Mutex<Offset>>, last_seg: Arc<Mutex<Offset>>, seg_count: Arc<Mutex<usize>>
 ) -> Result<(), Error> {
 
     let mut reader = BufReader::new(stream);
@@ -121,9 +121,9 @@ fn handle_producer(
             buffer.clear();
 
             let mut off = offset.lock().unwrap();
-            *off += n as u32;
+            *off += n as u64;
             let mut seg = seg_count.lock().unwrap();
-            if (*seg * SEGMENT_SIZE) < *off {
+            if (*seg as u64 * SEGMENT_SIZE) < *off {
                 // increment latest segment
                 // close current segment and continue with next segment
                 let mut last_seg = last_seg.lock().unwrap();
@@ -138,7 +138,7 @@ fn handle_producer(
 }
 
 fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mutex<Offset>>) ->  Result<Offset, Error> {
-    let mut offset: Offset = stream.read_u32::<NetworkEndian>()?;
+    let mut offset: Offset = stream.read_u64::<NetworkEndian>()?;
     println!("Feeding Consumer at Offset: {:?}", offset);
     let mut writer = BufWriter::new(stream);
 
@@ -164,7 +164,7 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
             let f = OpenOptions::new().write(false).read(true).open(path)?;
             let mut reader = BufReader::new(f);
             let relative_offset = offset - *seg_base_offset;
-            let _ = reader.seek(SeekFrom::Start(relative_offset as u64))?;
+            let _ = reader.seek(SeekFrom::Start(relative_offset))?;
             reader
         };
         // TODO: use sysc)all `sendfile` to copy directly from file to socket
@@ -234,7 +234,8 @@ fn main() -> Result<(), Error>{
         let meta = fs::metadata(last_seg_name)?;
         meta.len()
     };
-    let largest_offset = Arc::new(Mutex::new(largest_base_offset + size_of_last_file as Offset));
+    let largest_offset = Arc::new(Mutex::new(largest_base_offset + size_of_last_file));
+
     // accept connections and process them serially
     for incoming in listener.incoming() {
         let mut stream = match incoming {

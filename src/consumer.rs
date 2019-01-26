@@ -13,7 +13,7 @@ use std::fs::{OpenOptions, File};
 use std::net::{TcpListener, TcpStream};
 use std::io::Cursor;
 
-use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
+use byteorder::{ReadBytesExt, WriteBytesExt, NetworkEndian};
 use getopts::Options;
 
 
@@ -35,7 +35,7 @@ fn main() {
         Some(s) => s.parse().expect("Couldn't parse Port"),
         None => 7070,
     };
-    let mut offset: u32 = match matches.opt_str("o") {
+    let mut offset: u64 = match matches.opt_str("o") {
         Some(s) => s.parse().expect("Couldn't parse offset"),
         None => 0,
     };
@@ -47,9 +47,9 @@ fn main() {
     stream.write(&[MESSAGE_PREFIX]).unwrap();
 
     let mut buffer = vec![];
-    buffer.write_u32::<BigEndian>(offset).unwrap();
+    buffer.write_u64::<NetworkEndian>(offset).unwrap();
     let num_written = stream.write(buffer.as_slice()).unwrap();
-    if num_written != 4 {
+    if num_written != 8 {
         panic!("Can't communicate with broker");
     }
 
@@ -75,7 +75,7 @@ fn main() {
         //writer.write(&message.as_bytes()).unwrap();
         write!(writer, "{}", message).unwrap();
 
-        offset += line.len() as u32;
+        offset += line.len() as u64;
         line.clear(); // clear to reuse the buffer
     }
 }
