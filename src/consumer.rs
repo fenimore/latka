@@ -14,7 +14,20 @@ use byteorder::{WriteBytesExt, NetworkEndian};
 use getopts::Options;
 
 
-static USAGE: &str = "Stream consumer.";
+static USAGE: &str = "
+Streaming message queue consumer
+
+Usage:
+    consumer
+    consumer [--offset=number] [--port=number]
+    consumer [-o number] [-p number]
+
+Options:
+    -h --help     Show this screen.
+    -p --port     Connect to broker on port [default 7070]
+    -o --offset   Start consuming at offset [default 0]
+";
+
 const MESSAGE_PREFIX: u8 = 42;
 
 

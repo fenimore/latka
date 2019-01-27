@@ -19,6 +19,7 @@ use getopts::Options;
 
 static USAGE: &str = "
 broker message queue
+
 Usage:
   broker
   broker [--topic=dirname] [--port=number] [--create]
@@ -26,8 +27,8 @@ Usage:
 
 Options:
   -h --help     Show this screen.
-  -t --topic    Specify which topic (directory of segments)
-  -p --port     Serve on port
+  -t --topic    Specify which topic [default topic]
+  -p --port     Serve on port [default 7070]
   -c --create   Create topic if it doesn't exist
 ";
 
