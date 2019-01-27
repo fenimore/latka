@@ -17,5 +17,6 @@ name = "broker"
 path = "src/broker.rs"
 
 [dependencies]
+bufstream = "0.1"
 byteorder = "1"
 getopts = "0.2.18"

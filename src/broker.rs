@@ -13,6 +13,7 @@ use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
+use bufstream::BufStream;
 use byteorder::{ReadBytesExt, NetworkEndian};
 use getopts::Options;
 
@@ -44,10 +45,6 @@ struct Partition {
     topic: String,
     partition: u64,
 }
-
-// impl {
-
-// }
 
 fn log_filename(topic: &String, base_offset: Offset) -> String {
     format!("{}/{:0>20}.log", topic, base_offset)
@@ -133,15 +130,18 @@ fn handle_producer(stream: TcpStream, partition: Arc<Partition>) -> Result<(), E
     Ok(())
 }
 
-fn handle_consumer(mut stream: TcpStream, partition: Arc<Partition>) ->  Result<Offset, Error> {
-    let mut offset: Offset = stream.read_u64::<NetworkEndian>()?;
-    let mut writer = BufWriter::new(stream);
+fn handle_consumer(tcp_stream: TcpStream, partition: Arc<Partition>) ->  Result<Offset, Error> {
+    let mut offset: Offset = 0;
+    let mut stream = BufStream::new(tcp_stream);
 
-    println!("Feeding Consumer at Offset: {:?}", offset);
+    //let mut writer = BufWriter::new(stream);
     'infinite: loop{
-        // TODO: communicate with consumer to handle disconnection
-        // maybe blocking of a BufSream read?
-        writer.flush()?;
+        offset = stream.read_u64::<NetworkEndian>()?;
+        println!("Feeding Consumer at Offset: {:?}", offset);
+
+        stream.flush()?;
+        //println!("{}, {}", reply, n);
+
         // TODO: configure when to flush underlying buffer
         // ATM the consumer is flushed data every segment
         // because the consumer is non-blocking, and the BufWriter
@@ -180,7 +180,7 @@ fn handle_consumer(mut stream: TcpStream, partition: Arc<Partition>) ->  Result<
                     continue 'outer;
                 }
                 // TODO: use sysc)all `sendfile` to copy directly from file to socket
-                match write!(writer, "{}", buffer){
+                match write!(stream, "{}", buffer){
                     Ok(_) => {;},
                     Err(_) => break 'infinite,
                 };
