@@ -10,6 +10,7 @@
 use std::{io, fs, thread, env};
 use std::fs::{OpenOptions, File};
 use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
+use std::io::ErrorKind::ConnectionReset;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
@@ -131,21 +132,18 @@ fn handle_producer(stream: TcpStream, partition: Arc<Partition>) -> Result<(), E
 }
 
 fn handle_consumer(tcp_stream: TcpStream, partition: Arc<Partition>) ->  Result<Offset, Error> {
-    let mut offset: Offset = 0;
     let mut stream = BufStream::new(tcp_stream);
-
-    //let mut writer = BufWriter::new(stream);
+    let mut offset: Offset = stream.read_u64::<NetworkEndian>()?;
+    println!("Feeding Consumer at Offset: {:?}", offset);
     'infinite: loop{
-        offset = stream.read_u64::<NetworkEndian>()?;
-        println!("Feeding Consumer at Offset: {:?}", offset);
-
+        // flush remaining messages before sending heartbeat
         stream.flush()?;
-        //println!("{}, {}", reply, n);
+        // keep alive NULLBYTE
+        // This heartbeat message informs the broker
+        // when the connection is dropped if the consumer
+        // is waiting for more messages.
+        writeln!(stream, "\0")?;
 
-        // TODO: configure when to flush underlying buffer
-        // ATM the consumer is flushed data every segment
-        // because the consumer is non-blocking, and the BufWriter
-        // isn't configured explicitly, I have to explicitly flush. But where?
         let sorted_segments = sorted_segments(&partition.topic)?;
         let mut peekable_segments = sorted_segments.iter().peekable();
 
@@ -173,6 +171,8 @@ fn handle_consumer(tcp_stream: TcpStream, partition: Arc<Partition>) ->  Result<
                 reader
             };
 
+            // NOTE: the BufStream is flushed every segment
+            stream.flush()?;
             let mut buffer = String::new();
             'inner: loop {
                 let n = reader.read_line(&mut buffer)?;
@@ -267,6 +267,7 @@ fn main() -> Result<(), Error>{
                 thread::spawn(|| {
                     match handle_consumer(stream, partition) {
                         Ok(n) => println!("SUCCESS: Consumer stopped consuming at offset {}", n),
+                        Err(ref e) if e.kind() == ConnectionReset => println!("Consumer dropped off"),
                         Err(e) => println!("ERROR: {:?}", e),
                     };
                 });

@@ -19,7 +19,9 @@ static USAGE: &str = "Stream consumer.";
 const MESSAGE_PREFIX: u8 = 42;
 
 
-fn send_offset(stream: &mut BufStream<TcpStream>, offset: u64) -> io::Result<()> {
+fn handshake(stream: &mut BufStream<TcpStream>, offset: u64) -> io::Result<()> {
+    stream.write(&[MESSAGE_PREFIX])?;
+
     let mut big_endian_buffer = vec![];
     big_endian_buffer.write_u64::<NetworkEndian>(offset)?;
 
@@ -53,46 +55,48 @@ fn main() -> io::Result<()>{
     };
 
     let tcp_stream  = TcpStream::connect(("127.0.0.1", port))?;
-    tcp_stream.set_nonblocking(true)?;
     let mut stream = BufStream::new(tcp_stream);
-    stream.write(&[MESSAGE_PREFIX])?;
+    handshake(&mut stream, offset)?;
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
 
-    'outer: loop {
-        send_offset(&mut stream, offset)?;
-        stream.flush()?;
-        //writeln!(stream, "\0")?;
+    stream.flush()?;
 
-        let mut line = String::new();
-        'inner: loop {
-            let num_read = match stream.read_line(&mut line) {
-                Ok(n) => n,
-                Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                    // we've arrive at the end of the message queue
-                    // the broker will block until out next nullbyte
-                    // and then look for new messages
-                    // so the consumer will sleep here
-                    stream.flush()?;
-                    thread::sleep(Duration::from_millis(1000));
-                    continue 'outer;
-                },
-                Err(e) => {
-                    writeln!(writer, "{} {:?}", offset, e)?;
-                    break 'outer;
-                }
-            };
-            if num_read == 0 {
+    let mut line = String::new();
+    loop {
+        let num_read = match stream.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                writeln!(writer, "{} {:?}", offset, e)?;
                 break
             }
-
-            let message = format!("{}: {}", offset, line);
-            write!(writer, "{}", message).unwrap();
-
-            offset += line.len() as u64;
-            line.clear(); // clear to reuse the buffer
+        };
+        match num_read {
+            0 => break,
+            2 => {
+                // Check for hearbeat KEEP alive signal
+                // this is to communicate to the broker when
+                // the consumer drops off if the consumer
+                // has read to the end of the queue and is
+                // waiting for more messages
+                // The keep alive single is a null byte
+                if line.as_bytes()[0] == 0 {
+                    line.clear();
+                    // reached the end of the queue, wait
+                    // 100 milliseconds until next poll
+                    thread::sleep(Duration::from_millis(100));
+                    continue
+                }
+            },
+            _ => {;},
         }
+
+        let message = format!("{}: {}", offset, line);
+        write!(writer, "{}", message).unwrap();
+
+        offset += line.len() as u64;
+        line.clear(); // clear to reuse the buffer
     }
     Ok(())
 }
