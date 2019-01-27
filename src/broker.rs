@@ -1,3 +1,7 @@
+// TODO: better loggin
+// TODO: mutex unwrapping?
+// TODO: partition folders
+// TODO: handle consumer drop
 // Because  of  limitations  in  existing  systems,  we  developed  a  new
 //     messaging-based  log  aggregator  Kafka.  We  first  introduce  the
 //     basic concepts in Kafka. A stream of messages of a particular type
