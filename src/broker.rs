@@ -97,16 +97,18 @@ fn scan_topic(topic: String) -> io::Result<(Offset, usize)> {
 
 
 fn handle_producer(
-    topic: String, stream: TcpStream,
-    offset: Arc<Mutex<Offset>>, last_seg: Arc<Mutex<Offset>>, seg_count: Arc<Mutex<usize>>
+    topic: String,
+    stream: TcpStream,
+    offset: Arc<Mutex<Offset>>,
+    last_seg: Arc<Mutex<Offset>>,
+    seg_count: Arc<Mutex<usize>>,
 ) -> Result<(), Error> {
-
     let mut reader = BufReader::new(stream);
 
     'outer: loop {
-        let seg_name = {
+        let (seg_name, curr_seg): (String, u64) = {
             let n = last_seg.lock().unwrap();
-            format!("{:0>20}.log", *n)
+            (format!("{:0>20}.log", *n), *n)
         };
         let segment_file = get_segment(&topic, seg_name)?;
         let mut segment = BufWriter::new(segment_file);
@@ -120,14 +122,16 @@ fn handle_producer(
             write!(segment, "{}", buffer)?; // does write error if not all bytes are written?
             buffer.clear();
 
+            // update segment if it is "filled"
             let mut off = offset.lock().unwrap();
             *off += n as u64;
-            let mut seg = seg_count.lock().unwrap();
-            if (*seg as u64 * SEGMENT_SIZE) < *off {
-                // increment latest segment
-                // close current segment and continue with next segment
-                let mut last_seg = last_seg.lock().unwrap();
-                *seg += 1;
+            let mut last_seg = last_seg.lock().unwrap();
+            if *last_seg > curr_seg {
+                continue 'outer
+            }
+            let mut segment_count = seg_count.lock().unwrap();
+            if (*segment_count as u64 * SEGMENT_SIZE) < *off {
+                *segment_count += 1;
                 *last_seg = *off;
                 continue 'outer;
             }
@@ -159,16 +163,15 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
             None => {;}, // reached final segment, so process this segment
         }
         let mut reader: BufReader<File> = {
-            let seg_name = format!("{:0>20}.log", seg_base_offset);
-            let path = Path::new(&topic).join(seg_name);
-            let f = OpenOptions::new().write(false).read(true).open(path)?;
+            let seg_path = format!("{}/{:0>20}.log", topic, seg_base_offset);
+            let f = OpenOptions::new().write(false).read(true).open(seg_path)?;
             let mut reader = BufReader::new(f);
             let relative_offset = offset - *seg_base_offset;
             let _ = reader.seek(SeekFrom::Start(relative_offset))?;
             reader
         };
-        // TODO: use sysc)all `sendfile` to copy directly from file to socket
-        let mut buffer = String::new();
+
+        let mut buffer = String::new();  // TODO: use sysc)all `sendfile` to copy directly from file to socket
         'inner: loop {
             let n = reader.read_line(&mut buffer)?;
             if n == 0 {
@@ -227,16 +230,15 @@ fn main() -> Result<(), Error>{
 
     let (largest_base_offset, count) = scan_topic(topic.clone())?;
     // TODO: put into struct
-    let last_segment = Arc::new(Mutex::new(largest_base_offset));
-    let segment_count = Arc::new(Mutex::new(count));
     let size_of_last_file = {
         let last_seg_name = format!("{}/{:0>20}.log", topic, largest_base_offset);
         let meta = fs::metadata(last_seg_name)?;
         meta.len()
     };
     let largest_offset = Arc::new(Mutex::new(largest_base_offset + size_of_last_file));
+    let last_segment = Arc::new(Mutex::new(largest_base_offset));
+    let segment_count = Arc::new(Mutex::new(count));
 
-    // accept connections and process them serially
     for incoming in listener.incoming() {
         let mut stream = match incoming {
             Ok(inc) => inc,
