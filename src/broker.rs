@@ -17,10 +17,10 @@
 //     disk  only  after  a  configurable  number  of  messages  have  been
 //     published  or  a  certain  amount  of  time  has  elapsed.  A  message  is
 //     only exposed to the consumers after it is flushed
-//#![allow(dead_code)]
+#![allow(dead_code)]
 //#![allow(unused_imports)]
 //#![allow(non_snake_case)]
-//#![allow(unused_variables)]
+#![allow(unused_variables)]
 //#![feature(bufreader_buffer)]
 use std::{io, fs, thread, env};
 use std::fs::{OpenOptions, File};
@@ -51,6 +51,18 @@ const CONSUMER_MESSAGE_PREFIX: u8 = 42;
 const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
 type Offset = u64;
+
+struct Partition {
+    largest_offset: Arc<Mutex<Offset>>,
+    latest_segment: Arc<Mutex<Offset>>,
+    segments_count: Arc<Mutex<u64>>,
+    topic: String,
+    partition: u64,
+}
+
+// impl {
+
+// }
 
 fn log_filename(topic: &String, base_offset: Offset) -> String {
     format!("{}/{:0>20}.log", topic, base_offset)
@@ -142,7 +154,11 @@ fn handle_producer(
     Ok(())
 }
 
-fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mutex<Offset>>) ->  Result<Offset, Error> {
+fn handle_consumer(
+    mut stream: TcpStream,
+    topic: String,
+    _global_offset: Arc<Mutex<Offset>>,
+) ->  Result<Offset, Error> {
     let mut offset: Offset = stream.read_u64::<NetworkEndian>()?;
     println!("Feeding Consumer at Offset: {:?}", offset);
     let mut writer = BufWriter::new(stream);
@@ -152,6 +168,8 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
         writer.flush()?;
         // TODO: configure when to flush underlying buffer
         // ATM the consumer is flushed data every segment
+        // because the consumer is non-blocking, and the BufWriter
+        // isn't configured explicitly, I have to explicitly flush. But where?
         let sorted_segments = sorted_segments(&topic)?;
         let mut peekable_segments = sorted_segments.iter().peekable();
 
@@ -162,6 +180,7 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
             };
             if offset < *seg_base_offset {
                 break 'outer;  // seg_base_offsets will only get bigger
+                               // because peekable_segments are sorted small->big
             }
             match peekable_segments.peek() {
                 Some(n) => {
@@ -177,14 +196,14 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
                 let _ = reader.seek(SeekFrom::Start(relative_offset))?;
                 reader
             };
-            let mut buffer = String::new();
-            // TODO: use sysc)all `sendfile` to copy directly from file to socket
 
+            let mut buffer = String::new();
             'inner: loop {
                 let n = reader.read_line(&mut buffer)?;
                 if n == 0 {
                     continue 'outer;
                 }
+                // TODO: use sysc)all `sendfile` to copy directly from file to socket
                 match write!(writer, "{}", buffer){
                     Ok(_) => {;},
                     Err(_) => break 'infinite,
@@ -193,9 +212,8 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
                 offset += n as Offset;
             }
         }
-        // TODO: handle if global_offset is now greater than consumed offset
     }
-    Ok(offset) // this is an error? :thikning:
+    Ok(offset) // This means the connection closed at offset n
 }
 
 
@@ -265,19 +283,19 @@ fn main() -> Result<(), Error>{
                 let t = topic.clone();
                 thread::spawn(|| {
                     match handle_consumer(stream, t, largest_offset) {
-                        Ok(n) => {println!("Served Consumer to offset {}", n);},
+                        Ok(n) => println!("SUCCESS: Consumer stopped consuming at offset {}", n),
                         Err(e) => println!("ERROR: {:?}", e),
                     };
                 });
             },
             PRODUCER_MESSAGE_PREFIX => {
-                let largest_offset = largest_offset.clone();
-                let last_segment = last_segment.clone();
-                let segment_count = segment_count.clone();
+                let largest_offset = Arc::clone(&largest_offset);
+                let last_segment = Arc::clone(&last_segment);
+                let segment_count = Arc::clone(&segment_count);
                 let top = topic.clone();
-                thread::spawn(|| {
+                thread::spawn(move || {
                     match handle_producer(top, stream, largest_offset, last_segment, segment_count) {
-                        Ok(_) => {;},
+                        Ok(_) => println!("SUCCESS: Producer finished."),
                         Err(e) => println!("ERROR: {:?}", e),
                     };
                 });
