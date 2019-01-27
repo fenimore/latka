@@ -1,8 +1,3 @@
-// TODO: have main return Result and pass up errors instead of unwrapping
-//#![allow(dead_code)]
-//#![allow(unused_imports)]
-//#![allow(non_snake_case)]
-//#![allow(unused_variables)]
 extern crate byteorder;
 
 use std::{env, io};
@@ -15,7 +10,7 @@ use getopts::Options;
 
 
 static USAGE: &str = "
-Streaming message queue consumer
+Streaming message queue consumer to stdout
 
 Usage:
     consumer
