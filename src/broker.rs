@@ -1,11 +1,10 @@
 // TODO: better loggin
 // TODO: mutex unwrapping?
 // TODO: partition folders
-// TODO: handle consumer drop
-#![allow(dead_code)]
+//#![allow(dead_code)]
 //#![allow(unused_imports)]
 //#![allow(non_snake_case)]
-#![allow(unused_variables)]
+//#![allow(unused_variables)]
 //#![feature(bufreader_buffer)]
 use std::{io, fs, thread, env};
 use std::fs::{OpenOptions, File};
@@ -44,20 +43,60 @@ struct Partition {
     latest_segment: Mutex<Offset>,
     segments_count: Mutex<usize>,
     topic: String,
-    partition: u64,
+    _partition: u32,
 }
 
-fn log_filename(topic: &String, base_offset: Offset) -> String {
-    format!("{}/{:0>20}.log", topic, base_offset)
+impl Partition {
+    fn new(topic: String, part: u32) -> io::Result<Partition> {
+        let (largest_base_offset, count) = scan_topic(topic.clone())?;
+        let last_seg_name = format!("{}/{:0>20}.log", topic, largest_base_offset);
+        let count = if count == 0 {
+            OpenOptions::new().write(true).create_new(true).open(&last_seg_name)?;
+            1
+        } else {
+            count
+        };
+        let size_of_last_file: Offset = fs::metadata(last_seg_name)?.len();
+
+        Ok(Partition {
+            _partition: part,
+            topic: topic,
+            segments_count: Mutex::new(count),
+            largest_offset: Mutex::new(largest_base_offset + size_of_last_file),
+            latest_segment: Mutex::new(largest_base_offset),
+        })
+    }
+
+    fn log_filename(&self, base_offset: Offset) -> String {
+        format!("{}/{:0>20}.log", self.topic, base_offset)
+    }
+
+    fn open_consumer_segment_at_offset(&self, base_offset: Offset) -> io::Result<File> {
+        let log = OpenOptions::new().
+            write(false).
+            read(true).
+            open(self.log_filename(base_offset))?;
+
+        Ok(log)
+    }
+
+    fn open_latest_segment_for_appending(&self) -> io::Result<(File, Offset)>{
+        let base_offset: Offset = {
+            let n = self.latest_segment.lock().unwrap();
+            *n
+        };
+        let log = OpenOptions::new().
+            create(true).
+            append(true).
+            open(self.log_filename(base_offset))?;
+
+        Ok((log, base_offset))
+    }
 }
 
-fn get_segment(path: String) -> io::Result<File>{
-    let log = OpenOptions::new().create(true).append(true).open(path)?;
-
-    Ok(log)
-}
 
 fn sorted_segments(topic: &String) -> io::Result<Vec<Offset>> {
+    // TODO: remove unwrapping
     let mut segments: Vec<Offset> = fs::read_dir(topic)?.map(|entry| {
         let path = entry.unwrap().path();
         let stem = path.as_path().file_stem().unwrap();
@@ -70,13 +109,12 @@ fn sorted_segments(topic: &String) -> io::Result<Vec<Offset>> {
 
 
 fn scan_topic(topic: String) -> io::Result<(Offset, usize)> {
+    // TODO: remove unwrapping
     let mut largest_base_offset: Offset = 0;
     let mut segment_count: usize = 0;
     for entry in fs::read_dir(topic)? {
-        let file = entry?;
-        let path = file.path();
-        let as_path = path.as_path();
-        let stem = as_path.file_stem().unwrap();
+        let path = entry.unwrap().path();
+        let stem = path.as_path().file_stem().unwrap();
         let str_stem = stem.to_str().unwrap();
         let parsed = str_stem.parse::<Offset>().unwrap();
 
@@ -95,11 +133,8 @@ fn handle_producer(stream: TcpStream, partition: Arc<Partition>) -> Result<(), E
     let mut reader = BufReader::new(stream);
 
     'outer: loop {
-        let (seg_name, curr_seg): (String, u64) = {
-            let n = partition.latest_segment.lock().unwrap();
-            (log_filename(&partition.topic, *n), *n)
-        };
-        let segment_file = get_segment(seg_name)?;
+        let (segment_file, curr_seg_base_offset) = partition.open_latest_segment_for_appending()?;
+
         let mut segment = BufWriter::new(segment_file);
 
         let mut buffer = String::new();
@@ -115,7 +150,11 @@ fn handle_producer(stream: TcpStream, partition: Arc<Partition>) -> Result<(), E
             let mut off = partition.largest_offset.lock().unwrap();
             *off += n as u64;
             let mut last_seg = partition.latest_segment.lock().unwrap();
-            if *last_seg > curr_seg {
+            if *last_seg > curr_seg_base_offset {
+                // XXX: It's possible that another producer
+                // has moved on and created another file.
+                // In the meantime if there is a consumer consuming
+                // their offsets might be misaligned
                 println!("Potential misalignment of offsets here");
                 continue 'outer
             }
@@ -149,10 +188,10 @@ fn handle_consumer(tcp_stream: TcpStream, partition: Arc<Partition>) ->  Result<
 
         'outer: loop {
             let seg_base_offset = match peekable_segments.next() {
-                Some(o) => o,
+                Some(o) => *o,
                 None => break 'outer,
             };
-            if offset < *seg_base_offset {
+            if offset < seg_base_offset {
                 break 'outer;  // seg_base_offsets will only get bigger
                                // because peekable_segments are sorted small->big
             }
@@ -163,10 +202,9 @@ fn handle_consumer(tcp_stream: TcpStream, partition: Arc<Partition>) ->  Result<
                 None => {;}, // reached final segment, so process this segment
             }
             let mut reader: BufReader<File> = {
-                let seg_path = log_filename(&partition.topic, *seg_base_offset);
-                let f = OpenOptions::new().write(false).read(true).open(seg_path)?;
-                let mut reader = BufReader::new(f);
-                let relative_offset = offset - *seg_base_offset;
+                let file = partition.open_consumer_segment_at_offset(seg_base_offset)?;
+                let mut reader = BufReader::new(file);
+                let relative_offset = offset - seg_base_offset;
                 let _ = reader.seek(SeekFrom::Start(relative_offset))?;
                 reader
             };
@@ -214,17 +252,11 @@ fn main() -> Result<(), Error>{
         None => String::from("topic"),
     };
     if matches.opt_present("c") {
-        // uhhh
         fs::create_dir(&topic)?;
-
-        let init_seg = log_filename(&topic, 0);
-        let _ = get_segment(init_seg)?;
     };
     if matches.opt_present("r") {
         fs::remove_dir_all(&topic)?;
         fs::create_dir(&topic)?;
-        let init_seg = log_filename(&topic, 0);
-        let _ = get_segment(init_seg)?;
     };
     let port: u16 = match matches.opt_str("p") {
         Some(s) => s.parse().expect("Couldn't parse Port"),
@@ -235,24 +267,10 @@ fn main() -> Result<(), Error>{
     let listener = TcpListener::bind(("127.0.0.1", port))?;
 
 
-    let (largest_base_offset, count) = scan_topic(topic.clone())?;
-    // TODO: put into struct
-    let size_of_last_file = {
-        let last_seg_name = log_filename(&topic, largest_base_offset);
-        let meta = fs::metadata(last_seg_name)?;
-        meta.len()
-    };
-    let largest_offset = Arc::new(Mutex::new(largest_base_offset + size_of_last_file));
-    let last_segment = Arc::new(Mutex::new(largest_base_offset));
-    let segment_count = Arc::new(Mutex::new(count));
 
-    let partition = Arc::new(Partition {
-        topic: topic.clone(),
-        partition: 0,
-        segments_count: Mutex::new(count),
-        largest_offset: Mutex::new(largest_base_offset + size_of_last_file),
-        latest_segment: Mutex::new(largest_base_offset),
-    });
+    let partition = Arc::new(
+        Partition::new(topic.clone(), 0)?
+    );
 
     for incoming in listener.incoming() {
         let mut stream = match incoming {
@@ -268,7 +286,7 @@ fn main() -> Result<(), Error>{
                     match handle_consumer(stream, partition) {
                         Ok(n) => println!("SUCCESS: Consumer stopped consuming at offset {}", n),
                         Err(ref e) if e.kind() == ConnectionReset => println!("Consumer dropped off"),
-                        Err(e) => println!("ERROR: {:?}", e),
+                        Err(e) => println!("ERROR CON: {:?}", e),
                     };
                 });
             },
@@ -277,7 +295,7 @@ fn main() -> Result<(), Error>{
                 thread::spawn(move || {
                     match handle_producer(stream, partition) {
                         Ok(_) => println!("SUCCESS: Producer finished."),
-                        Err(e) => println!("ERROR: {:?}", e),
+                        Err(e) => println!("ERROR PRO: {:?}", e),
                     };
                 });
             },
