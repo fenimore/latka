@@ -57,7 +57,6 @@ fn main() {
     let stdout = io::stdout();
     let mut writer = stdout.lock();
 
-
     let mut line = String::new(); // may also use with_capacity if you can guess
     loop {
         let num_read = match reader.read_line(&mut line) {
@@ -67,6 +66,7 @@ fn main() {
                 break
             },
         };
+        println!("check:{:?}", line.as_bytes());
         if num_read == 0 {
             break
         }
@@ -76,6 +76,7 @@ fn main() {
         write!(writer, "{}", message).unwrap();
 
         offset += line.len() as u64;
+        println!("offset:{}", offset);
         line.clear(); // clear to reuse the buffer
     }
 }

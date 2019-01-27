@@ -25,7 +25,6 @@
 use std::{io, fs, thread, env};
 use std::fs::{OpenOptions, File};
 use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
-use std::path::Path;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
@@ -53,10 +52,12 @@ const PRODUCER_MESSAGE_PREFIX: u8 = 78;
 
 type Offset = u64;
 
-fn get_segment(topic: &String, name: String) -> io::Result<File>{
-    //let name = format!("{:0>21}", n);
-    let log_path = Path::new(topic).join(name.as_str());
-    let log = OpenOptions::new().create(true).append(true).open(log_path)?;
+fn log_filename(topic: &String, base_offset: Offset) -> String {
+    format!("{}/{:0>20}.log", topic, base_offset)
+}
+
+fn get_segment(path: String) -> io::Result<File>{
+    let log = OpenOptions::new().create(true).append(true).open(path)?;
 
     Ok(log)
 }
@@ -69,7 +70,6 @@ fn sorted_segments(topic: &String) -> io::Result<Vec<Offset>> {
         str_stem.parse::<Offset>().unwrap()
     }).collect();
     segments.sort_unstable();
-    //segments.reverse(); // the highest offset is first
     Ok(segments)
 }
 
@@ -108,9 +108,9 @@ fn handle_producer(
     'outer: loop {
         let (seg_name, curr_seg): (String, u64) = {
             let n = last_seg.lock().unwrap();
-            (format!("{:0>20}.log", *n), *n)
+            (log_filename(&topic, *n), *n)
         };
-        let segment_file = get_segment(&topic, seg_name)?;
+        let segment_file = get_segment(seg_name)?;
         let mut segment = BufWriter::new(segment_file);
 
         let mut buffer = String::new();
@@ -127,6 +127,7 @@ fn handle_producer(
             *off += n as u64;
             let mut last_seg = last_seg.lock().unwrap();
             if *last_seg > curr_seg {
+                println!("Potential misalignment of offsets here");
                 continue 'outer
             }
             let mut segment_count = seg_count.lock().unwrap();
@@ -145,45 +146,56 @@ fn handle_consumer(mut stream: TcpStream, topic: String, _global_offset: Arc<Mut
     let mut offset: Offset = stream.read_u64::<NetworkEndian>()?;
     println!("Feeding Consumer at Offset: {:?}", offset);
     let mut writer = BufWriter::new(stream);
+    'infinite: loop{
+        // TODO: communicate with consumer to handle disconnection
+        // maybe blocking of a BufSream read?
+        writer.flush()?;
+        // TODO: configure when to flush underlying buffer
+        // ATM the consumer is flushed data every segment
+        let sorted_segments = sorted_segments(&topic)?;
+        let mut peekable_segments = sorted_segments.iter().peekable();
 
-    let sorted_segments = sorted_segments(&topic)?;
-    let mut peekable_segments = sorted_segments.iter().peekable();
-    'outer: loop {
-        let seg_base_offset = match peekable_segments.next() {
-            Some(o) => o,
-            None => break 'outer,
-        };
-        if offset < *seg_base_offset {
-            break 'outer;  // seg_base_offsets will only get bigger
-        }
-        match peekable_segments.peek() {
-            Some(n) => {
-                if offset >= **n { continue 'outer }  // already consumed this segment
-            },
-            None => {;}, // reached final segment, so process this segment
-        }
-        let mut reader: BufReader<File> = {
-            let seg_path = format!("{}/{:0>20}.log", topic, seg_base_offset);
-            let f = OpenOptions::new().write(false).read(true).open(seg_path)?;
-            let mut reader = BufReader::new(f);
-            let relative_offset = offset - *seg_base_offset;
-            let _ = reader.seek(SeekFrom::Start(relative_offset))?;
-            reader
-        };
-
-        let mut buffer = String::new();  // TODO: use sysc)all `sendfile` to copy directly from file to socket
-        'inner: loop {
-            let n = reader.read_line(&mut buffer)?;
-            if n == 0 {
-                continue 'outer;
+        'outer: loop {
+            let seg_base_offset = match peekable_segments.next() {
+                Some(o) => o,
+                None => break 'outer,
+            };
+            if offset < *seg_base_offset {
+                break 'outer;  // seg_base_offsets will only get bigger
             }
-            offset += n as Offset;
-            write!(writer, "{}", buffer).unwrap();
-            buffer.clear();
+            match peekable_segments.peek() {
+                Some(n) => {
+                    if offset >= **n { continue 'outer }  // already consumed this segment
+                },
+                None => {;}, // reached final segment, so process this segment
+            }
+            let mut reader: BufReader<File> = {
+                let seg_path = log_filename(&topic, *seg_base_offset);
+                let f = OpenOptions::new().write(false).read(true).open(seg_path)?;
+                let mut reader = BufReader::new(f);
+                let relative_offset = offset - *seg_base_offset;
+                let _ = reader.seek(SeekFrom::Start(relative_offset))?;
+                reader
+            };
+            let mut buffer = String::new();
+            // TODO: use sysc)all `sendfile` to copy directly from file to socket
+
+            'inner: loop {
+                let n = reader.read_line(&mut buffer)?;
+                if n == 0 {
+                    continue 'outer;
+                }
+                match write!(writer, "{}", buffer){
+                    Ok(_) => {;},
+                    Err(_) => break 'infinite,
+                };
+                buffer.clear();
+                offset += n as Offset;
+            }
         }
+        // TODO: handle if global_offset is now greater than consumed offset
     }
-    // TODO: handle if global_offset is now greater than consumed offset
-    Ok(offset)
+    Ok(offset) // this is an error? :thikning:
 }
 
 
@@ -210,14 +222,15 @@ fn main() -> Result<(), Error>{
     if matches.opt_present("c") {
         // uhhh
         fs::create_dir(&topic)?;
-        let init_seg = format!("{:0>20}.log", 0);
-        let _ = get_segment(&topic, init_seg)?;
+
+        let init_seg = log_filename(&topic, 0);
+        let _ = get_segment(init_seg)?;
     };
     if matches.opt_present("r") {
         fs::remove_dir_all(&topic)?;
         fs::create_dir(&topic)?;
-        let init_seg = format!("{:0>20}.log", 0);
-        let _ = get_segment(&topic, init_seg)?;
+        let init_seg = log_filename(&topic, 0);
+        let _ = get_segment(init_seg)?;
     };
     let port: u16 = match matches.opt_str("p") {
         Some(s) => s.parse().expect("Couldn't parse Port"),
@@ -231,7 +244,7 @@ fn main() -> Result<(), Error>{
     let (largest_base_offset, count) = scan_topic(topic.clone())?;
     // TODO: put into struct
     let size_of_last_file = {
-        let last_seg_name = format!("{}/{:0>20}.log", topic, largest_base_offset);
+        let last_seg_name = log_filename(&topic, largest_base_offset);
         let meta = fs::metadata(last_seg_name)?;
         meta.len()
     };
@@ -252,7 +265,7 @@ fn main() -> Result<(), Error>{
                 let t = topic.clone();
                 thread::spawn(|| {
                     match handle_consumer(stream, t, largest_offset) {
-                        Ok(_) => {;},
+                        Ok(n) => {println!("Served Consumer to offset {}", n);},
                         Err(e) => println!("ERROR: {:?}", e),
                     };
                 });

@@ -1,18 +1,10 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(non_snake_case)]
-#![allow(unused_variables)]
 extern crate byteorder;
 
-use std::env;
-use std::io;
-use std::io::{Seek, SeekFrom, BufRead, BufReader, BufWriter};
-use std::io::{Write, Lines, Read};
-use std::path::Path;
-use std::fs::{OpenOptions, File};
-use std::net::{TcpListener, TcpStream};
+use std::{env, io};
+use std::io::{Write, BufWriter};
+use std::net::{TcpStream};
+use std::{thread, time};
 
-use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use getopts::Options;
 
 
@@ -23,11 +15,16 @@ const MESSAGE_PREFIX: u8 = 78;
 
 fn main() {
     let mut opts = Options::new();
+    opts.optopt("s", "sleep", "sleep for testing", "sleep, milliseconds");
     opts.optopt("p", "port", "broker port", "port");
     let args: Vec<_> = env::args().collect();
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(_) => {println!("{}", USAGE); return},
+    };
+    let sleep: u64 = match matches.opt_str("s") {
+        Some(p) => p.parse().expect("Couldn't parse pause"),
+        None => 100,
     };
     let port: u16 = match matches.opt_str("p") {
         Some(s) => s.parse().expect("Couldn't parse Port"),
@@ -51,5 +48,8 @@ fn main() {
         }
         write!(writer, "{}", input).unwrap();
         input.clear();
+
+        let pause = time::Duration::from_millis(sleep);
+        thread::sleep(pause);
     }
 }
