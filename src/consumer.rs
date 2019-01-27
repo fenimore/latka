@@ -5,8 +5,7 @@
 //#![allow(unused_variables)]
 extern crate byteorder;
 
-use std::{env, io, thread};
-use std::time::Duration;
+use std::{env, io};
 use std::io::{BufRead, Write, Error, ErrorKind};
 use std::net::{TcpStream};
 
@@ -83,9 +82,6 @@ fn main() -> io::Result<()>{
                 // The keep alive single is a null byte
                 if line.as_bytes()[0] == 0 {
                     line.clear();
-                    // reached the end of the queue, wait
-                    // 100 milliseconds until next poll
-                    thread::sleep(Duration::from_millis(100));
                     continue
                 }
             },
