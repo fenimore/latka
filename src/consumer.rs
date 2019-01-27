@@ -1,19 +1,16 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(non_snake_case)]
-#![allow(unused_variables)]
+// TODO: have main return Result and pass up errors instead of unwrapping
+//#![allow(dead_code)]
+//#![allow(unused_imports)]
+//#![allow(non_snake_case)]
+//#![allow(unused_variables)]
 extern crate byteorder;
 
 use std::env;
 use std::io;
-use std::io::{Seek, SeekFrom, BufRead, BufReader, BufWriter, LineWriter};
-use std::io::{Write, Lines};
-use std::path::Path;
-use std::fs::{OpenOptions, File};
-use std::net::{TcpListener, TcpStream};
-use std::io::Cursor;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpStream};
 
-use byteorder::{ReadBytesExt, WriteBytesExt, NetworkEndian};
+use byteorder::{WriteBytesExt, NetworkEndian};
 use getopts::Options;
 
 
@@ -66,17 +63,14 @@ fn main() {
                 break
             },
         };
-        println!("check:{:?}", line.as_bytes());
         if num_read == 0 {
             break
         }
 
         let message = format!("{}: {}", offset, line);
-        //writer.write(&message.as_bytes()).unwrap();
         write!(writer, "{}", message).unwrap();
 
         offset += line.len() as u64;
-        println!("offset:{}", offset);
         line.clear(); // clear to reuse the buffer
     }
 }
