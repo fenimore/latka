@@ -9,18 +9,31 @@ use getopts::Options;
 
 
 
-static USAGE: &str = "Streaming Producer from stdin.";
+static USAGE: &str = "
+Streaming message queue producer from stdin
+
+Usage:
+    producer
+    producer [--sleep=number] [--port=number]
+    producer [-s number] [-p number]
+
+Options:
+    -h --help     Show this screen.
+    -p --port     Connect to broker on port [default 7070]
+    -s --sleep    Milliseconds pause between writing to topic [default 100]
+";
+
 const MESSAGE_PREFIX: u8 = 78;
 
 
-fn main() {
+fn main() -> io::Result<()> {
     let mut opts = Options::new();
     opts.optopt("s", "sleep", "sleep for testing", "sleep, milliseconds");
     opts.optopt("p", "port", "broker port", "port");
     let args: Vec<_> = env::args().collect();
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
-        Err(_) => {println!("{}", USAGE); return},
+        Err(_) => {println!("{}", USAGE); return Ok(())},
     };
     let sleep: u64 = match matches.opt_str("s") {
         Some(p) => p.parse().expect("Couldn't parse pause"),
@@ -33,10 +46,11 @@ fn main() {
 
     // So each message is newline separated
     // and a producer ends streaming once it closes the connection
-    let stream  = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // TODO: handle unable to connect with more helpful message
+    let stream  = TcpStream::connect(("127.0.0.1", port))?;
     let mut writer = BufWriter::new(stream);
-    writer.write(&[MESSAGE_PREFIX]).unwrap();
-    writer.flush().unwrap();
+    writer.write(&[MESSAGE_PREFIX])?;
+    writer.flush()?;
 
     let stdin = io::stdin();
 
@@ -46,10 +60,14 @@ fn main() {
             Ok(n) => {if n == 0 {break}}
             Err(_) => break,
         }
-        write!(writer, "{}", input).unwrap();
+        write!(writer, "{}", input)?;
         input.clear();
 
+        if sleep == 0 {
+            continue
+        }
         let pause = time::Duration::from_millis(sleep);
         thread::sleep(pause);
     }
+    Ok(())
 }
