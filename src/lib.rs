@@ -4,42 +4,27 @@
 #![allow(unused_variables)]
 //#![feature(bufreader_buffer)]
 use std::{io, fs, thread, env};
+use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use std::fs::{OpenOptions, File};
 use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
 use std::io::ErrorKind::ConnectionReset;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::collections::LinkedList;
+use std::collections::BinaryHeap;
 
 pub type Offset = u64;
 
-
-fn sorted_segments(topic: &String) -> io::Result<Vec<Offset>> {
-    let mut segments: Vec<Offset> = fs::read_dir(topic)?.map(
-        |entry| {
-            let path = entry.unwrap().path();
-            let stem = path.as_path().file_stem().unwrap();
-            let str_stem = stem.to_str().unwrap();
-            str_stem.parse::<Offset>().unwrap()
-        }
-    ).collect();
-    segments.sort_unstable();
-    Ok(segments)
+pub enum Client { // enum for opening files
+    Consumer,
+    Producer,
 }
 
-
-struct Partition  {
-    topic: String,
-    partition: u32,
-    segment_offsets: LinkedList<Offset>,
-}
 
 
 struct Segment {
     base_offset: Offset,
     filename: String,
-    writer: Option<File>,
-    reader: Option<File>,
+    file: Option<File>,
 }
 
 impl Segment {
@@ -48,32 +33,47 @@ impl Segment {
         Ok(Segment {
             base_offset: offset,
             filename: filename,
-            writer: None,
-            reader: None,
+            file: None,
         })
     }
-    fn producer(&mut self) -> io::Result<()> {
-        let writer: File = OpenOptions::new().create(true).append(true).open(&self.filename)?;
-        self.writer = Some(writer);
-        Ok(())
-    }
-    fn consumer(&mut self) -> io::Result<()> {
-        let reader: File = OpenOptions::new().create(true).write(true).read(true).open(&self.filename)?;
-        self.reader = Some(reader);
-        Ok(())
+    fn open(&mut self, client: Client) ->  io::Result<()> {
+        match client {
+            Client::Consumer => {
+                OpenOptions::new().create(true).open(&self.filename)?;
+                let reader = OpenOptions::new().read(true).open(&self.filename)?;
+                self.file = Some(reader);
+                return Ok(());
+            },
+            Client::Producer => {
+                let writer = OpenOptions::new().create(true).append(true).open(&self.filename)?;
+                self.file = Some(writer);
+                return Ok(());
+            }
+        }
     }
 
+    fn close(&mut self) {
+        let file = self.file.take();
+        drop(file)
+    }
+
+    fn len(&self) -> u64 {
+        if let Ok(attr) = fs::metadata(&self.filename) {
+            return attr.len();
+        }
+        return 0
+    }
 }
 
 impl Write for Segment {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(w) = &mut self.writer{
+        if let Some(w) = &mut self.file {
             return w.write(buf)
         }
         Ok(0)
     }
     fn flush(&mut self) -> io::Result<()> {
-        if let Some(w) = &mut self.writer {
+        if let Some(w) = &mut self.file {
             return w.flush();
         }
         Ok(())
@@ -81,7 +81,7 @@ impl Write for Segment {
 }
 impl Read for Segment {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if let Some(r) = &mut self.reader {
+        if let Some(r) = &mut self.file {
             return r.read(buf);
         }
         Ok(0)
@@ -89,7 +89,7 @@ impl Read for Segment {
 }
 impl Seek for Segment {
     fn seek(&mut self, offset: SeekFrom) -> io::Result<u64> {
-        if let Some(r) = &mut self.reader {
+        if let Some(r) = &mut self.file {
             return r.seek(offset);
         }
         Ok(0)
@@ -97,63 +97,164 @@ impl Seek for Segment {
 }
 
 
+impl Eq for Segment { }
+
+impl PartialEq for Segment {
+    fn eq(&self, other: &Self) -> bool {
+        self.base_offset == other.base_offset
+    }
+}
+
+impl Ord for Segment {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.base_offset.cmp(&other.base_offset)
+    }
+}
+
+impl PartialOrd for Segment {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+
+
+struct Partition  {
+    path: String,
+    topic: String,
+    partition: u32,
+    segments: BinaryHeap<Segment>,
+}
+
+impl Partition {
+    fn new(topic: String, part: u32) -> io::Result<Partition> {
+        fs::create_dir(format!("{}/{}", topic, part))?;
+        Ok(Partition {
+            path: format!("{}/{}", &topic, &part),
+            topic: topic,
+            partition: part,
+            segments: BinaryHeap::new(),
+        })
+    }
+    fn fill_segments(&mut self) -> io::Result<()> {
+        if !self.segments.is_empty() {
+            self.segments.clear();
+        }
+
+        for entry in fs::read_dir(&self.path)? {
+            let entry_path = entry.unwrap().path();
+            let path = entry_path.as_path();
+            let stem = path.file_stem().unwrap();
+            let str_stem = stem.to_str().unwrap();
+            let offset = str_stem.parse::<Offset>().unwrap();
+            if let Ok(seg) = Segment::new(self.path.clone(), offset) {
+                self.segments.push(seg);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+
+
 
 #[cfg(test)]
 mod tests {
     use std::fs::{create_dir, remove_dir_all, remove_file};
-    use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
     use std::io::{BufReader, BufWriter, Write, Read, BufRead, Cursor};
     use super::*;
 
+    // Partition
+    #[test]
+    fn test_new_partition() {
+        let partition = Partition::new(String::from("topic"), 0).unwrap();//.expect("create partition dir");
+        assert_eq!(partition.partition, 0);
+        assert_eq!(partition.topic, "topic");
+    }
+
+    #[test]
+    fn test_fill_segments() {
+        let partition = Partition::new(String::from("topic"), 0);
+        assert_eq!(partition.partition, 0);
+        assert_eq!(partition.topic, "topic");
+    }
+
+
+    // Segment
     #[test]
     fn test_new_segment() {
         let segment = Segment::new(String::from("."), 0).expect("Cant open segment");
         assert_eq!(segment.base_offset, 0);
-        fs::remove_file(segment.filename).expect("couldn't remove file");
+        fs::remove_file(segment.filename).expect(" remove file");
     }
 
     #[test]
     fn test_segment_consumer_seeks() {
         let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
 
-        segment.producer().expect("couldn't open write file");
+        segment.open(Client::Producer).expect("open write file");
         let bytes = String::from("wombiest");
         let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-        drop(segment.writer.take());
+        segment.close();
 
-        segment.consumer().expect("couldn't open read file");
-        segment.seek(SeekFrom::Start(4)).expect("couldn't seek");
+        segment.open(Client::Consumer).expect(" open read file");
+        segment.seek(SeekFrom::Start(4)).expect(" seek");
         let mut buf = [0; 4];
         let n = segment.read(&mut buf).expect("writing eight bytes");
         assert_eq!(n, 4);
         assert_eq!(&buf, b"iest");
-        fs::remove_file(segment.filename).expect("couldn't remove file");
+        fs::remove_file(segment.filename).expect("remove file");
     }
 
     #[test]
     fn test_segment_consumer_reads() {
         let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
 
-        segment.producer().expect("couldn't open write file");
+        segment.open(Client::Producer).expect(" open write file");
         let bytes = String::from("wombiest");
         let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-        drop(segment.writer.take());
+        segment.close();
 
-        segment.consumer().expect("couldn't open read file");
+        segment.open(Client::Consumer).expect("open read file");
         let mut buf = [0; 8];
         let n = segment.read(&mut buf).expect("writing eight bytes");
+
         assert_eq!(n, 8);
         assert_eq!(&buf, b"wombiest");
-        fs::remove_file(segment.filename).expect("couldn't remove file");
+
+        fs::remove_file(segment.filename).expect(" remove file");
     }
 
     #[test]
     fn test_segment_producer_writes() {
         let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-        segment.producer().expect("couldn't open write file");
+        segment.open(Client::Producer).expect("open write file");
         let bytes = String::from("wombiest");
         let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
         assert_eq!(n, 8);
-        fs::remove_file(segment.filename).expect("couldn't remove file");
+        fs::remove_file(segment.filename).expect("remove file");
     }
+
+    #[test]
+    fn test_segment_fails_when_producer_reads() {
+        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
+        segment.open(Client::Producer).expect("open write file");
+        let bytes = String::from("wombiest");
+        segment.write(bytes.as_bytes()).expect("write to file");
+
+        let mut buf = [0; 8];
+        let result = segment.read(&mut buf);
+        assert!(result.is_err(), "producer shouldn't read");
+    }
+
+    #[test]
+    fn test_segment_fails_when_consumer_write() {
+        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
+        segment.open(Client::Consumer).expect("open write file");
+        let bytes = String::from("wombiest");
+        let result = segment.write(bytes.as_bytes());
+        assert!(result.is_err(), "consumer shouldn't write");
+    }
+
 }
