@@ -6,8 +6,6 @@
 //#![allow(non_snake_case)]
 #![allow(unused_variables)]
 //#![feature(bufreader_buffer)]
-extern crate latka;
-
 use std::{io, fs, thread, env};
 use std::fs::{OpenOptions, File};
 use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
