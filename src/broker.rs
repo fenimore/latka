@@ -152,11 +152,11 @@ fn handle_producer(stream: TcpStream, partition: Arc<Partition>) -> Result<(), E
             *off += n as u64;
             let mut last_seg = partition.latest_segment.lock().unwrap();
             if *last_seg > curr_seg_base_offset {
-                // XXX: It's possible that another producer
-                // has moved on and created another file.
-                // In the meantime if there is a consumer consuming
-                // their offsets might be misaligned
-                println!("Potential misalignment of offsets here");
+                // Data consistency guarantees hold as long as you are producing
+                // to one partition and consuming from one partition.
+                // All guarantees are off if you are reading from the same
+                // partition using two consumers or writing to the same partition
+                // using two producers~ https://sookocheff.com/post/kafka/kafka-in-a-nutshell/
                 continue 'outer
             }
             let mut segment_count = partition.segments_count.lock().unwrap();
