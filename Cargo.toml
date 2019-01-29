@@ -4,6 +4,10 @@ version = "0.0.1"
 authors = ["Fenimore Love <exorable.ludos@gmail.com>"]
 edition = "2018"
 
+[lib]
+name = "latka"
+path = "src/lib.rs"
+
 [[bin]]
 name = "consumer"
 path = "src/consumer.rs"
