@@ -42,8 +42,8 @@ impl Segment {
     pub fn open(&mut self, client: Client) ->  io::Result<()> {
         match client {
             Client::Consumer => {
-                drop(OpenOptions::new().create(true).open(&self.filename)?); // touch
-                let reader = OpenOptions::new().read(true).write(true).open(&self.filename)?;
+                drop(OpenOptions::new().create(true).write(true).open(&self.filename)?); // touch
+                let reader = OpenOptions::new().read(true).open(&self.filename)?;
                 self.file = Some(reader);
                 return Ok(());
             },
@@ -139,7 +139,6 @@ mod tests {
     fn test_new_segment() {
         let segment = Segment::new(String::from("."), 0).expect("Cant open segment");
         assert_eq!(segment.base_offset, 0);
-        fs::remove_file(segment.filename).expect(" remove file");
     }
 
     #[test]
@@ -162,8 +161,7 @@ mod tests {
 
     #[test]
     fn test_segment_consumer_reads() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-
+        let mut segment = Segment::new(String::from("."), 0).expect("Can't open segment");
         segment.open(Client::Producer).expect(" open write file");
         let bytes = String::from("wombiest");
         let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
@@ -199,7 +197,6 @@ mod tests {
         let mut buf = [0; 8];
         let result = segment.read(&mut buf);
         assert!(result.is_err(), "producer shouldn't read");
-        fs::remove_file(segment.filename).expect("remove file");
     }
 
     #[test]
