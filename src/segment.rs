@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
+#![allow(unused_must_use)]
 //#![allow(non_snake_case)]
 #![allow(unused_variables)]
 //#![feature(bufreader_buffer)]
@@ -126,86 +127,93 @@ impl PartialOrd for Segment {
 
 
 
+#[cfg(test)]
+extern crate speculate;
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use speculate::speculate;
+    use std::{io, fs};
     use std::fs::{create_dir, remove_dir_all, remove_file};
     use std::io::{BufReader, BufWriter, Write, Read, BufRead, SeekFrom, Seek};
     use super::{Segment, Client};
 
-    // Segment
-    #[test]
-    fn test_new_segment() {
-        let segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-        assert_eq!(segment.base_offset, 0);
-    }
+    speculate! {
+        const SEGMENTPATH: &[u8] = b"tmp/";
 
-    #[test]
-    fn test_segment_consumer_seeks() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
+        before {
+            create_dir("tmp/");
+        }
 
-        segment.open(Client::Producer).expect("open write file");
-        let bytes = String::from("wombiest");
-        let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-        segment.close();
+        after {
+            //remove_dir_all("tmp/");
+        }
 
-        segment.open(Client::Consumer).expect(" open read file");
-        segment.seek(SeekFrom::Start(4)).expect(" seek");
-        let mut buf = [0; 4];
-        let n = segment.read(&mut buf).expect("writing eight bytes");
-        assert_eq!(n, 4);
-        assert_eq!(&buf, b"iest");
-        fs::remove_file(segment.filename).expect("remove file");
-    }
+        test "new segment" {
+            let segment = Segment::new(String::from("tmp/"), 0).expect("Cant open segment");
+            assert_eq!(segment.base_offset, 0);
+        }
 
-    #[test]
-    fn test_segment_consumer_reads() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Can't open segment");
-        segment.open(Client::Producer).expect(" open write file");
-        let bytes = String::from("wombiest");
-        let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-        segment.close();
+        describe "consumer" {
+            test "consumer can seek" {
+                let mut segment = Segment::new(String::from("tmp/"), 0).expect("can't open segment");
 
-        segment.open(Client::Consumer).expect("open read file");
-        let mut buf = [0; 8];
-        let n = segment.read(&mut buf).expect("writing eight bytes");
+                let data = String::from("wombiest");
+                segment.open(Client::Producer).expect(" open write file");
+                let bytes = String::from("wombiest");
+                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
+                segment.close();
 
-        assert_eq!(n, 8);
-        assert_eq!(&buf, b"wombiest");
+                segment.open(Client::Consumer).expect("open read file");
+                segment.seek(SeekFrom::Start(4)).expect("seek");
+                let mut buf = [0; 4];
+                let n = segment.read(&mut buf).expect("reading 4 bytes");
+                assert_eq!(n, 4);
+                assert_eq!(&buf, b"iest");
+            }
+            test "consumer can read" {
+                let mut segment = Segment::new(String::from("tmp/"), 1).expect("Can't open segment");
+                segment.open(Client::Producer).expect(" open write file");
+                let bytes = String::from("wombiest");
+                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
+                segment.close();
 
-        fs::remove_file(segment.filename).expect(" remove file");
-    }
+                segment.open(Client::Consumer).expect("open read file");
+                let mut buf = [0; 8];
+                let n = segment.read(&mut buf).expect("writing eight bytes");
 
-    #[test]
-    fn test_segment_producer_writes() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-        segment.open(Client::Producer).expect("open write file");
-        let bytes = String::from("wombiest");
-        let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-        assert_eq!(n, 8);
-        fs::remove_file(segment.filename).expect("remove file");
-    }
+                assert_eq!(n, 8);
+                assert_eq!(&buf, b"wombiest");
+            }
 
-    #[test]
-    fn test_segment_fails_when_producer_reads() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-        segment.open(Client::Producer).expect("open write file");
-        let bytes = String::from("wombiest");
-        segment.write(bytes.as_bytes()).expect("write to file");
+            test "consumer can't write" {
+                let mut segment = Segment::new(String::from("tmp/"), 2).expect("Cant open segment");
+                segment.open(Client::Consumer).expect("open write file");
+                let bytes = String::from("wombiest");
+                let result = segment.write(bytes.as_bytes());
+                assert!(result.is_err(), "consumer shouldn't write");
+            }
 
-        let mut buf = [0; 8];
-        let result = segment.read(&mut buf);
-        assert!(result.is_err(), "producer shouldn't read");
-    }
+        }
+        describe "producer" {
+            test "producer writes" {
+                let mut segment = Segment::new(String::from("tmp/"), 3).expect("Cant open segment");
+                segment.open(Client::Producer).expect("open write file");
+                let bytes = String::from("wombiest");
+                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
+                assert_eq!(n, 8);
+            }
 
-    #[test]
-    fn test_segment_fails_when_consumer_write() {
-        let mut segment = Segment::new(String::from("."), 0).expect("Cant open segment");
-        segment.open(Client::Consumer).expect("open write file");
-        let bytes = String::from("wombiest");
-        let result = segment.write(bytes.as_bytes());
-        assert!(result.is_err(), "consumer shouldn't write");
-        fs::remove_file(segment.filename).expect("remove file");
+            test "producer can't read" {
+                let mut segment = Segment::new(String::from("tmp/"), 4).expect("Cant open segment");
+                segment.open(Client::Producer).expect("open write file");
+                let bytes = String::from("wombiest");
+                segment.write(bytes.as_bytes()).expect("write to file");
+
+                let mut buf = [0; 8];
+                let result = segment.read(&mut buf);
+                assert!(result.is_err(), "producer shouldn't read");
+            }
+        }
     }
 }

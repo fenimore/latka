@@ -54,32 +54,42 @@ impl Partition {
 }
 
 
+
+#[cfg(test)]
+extern crate speculate;
+
 #[cfg(test)]
 mod tests {
+    use speculate::speculate;
     use std::fs::{create_dir, remove_dir_all, remove_file};
     use std::io::{BufReader, BufWriter, Write, Read, BufRead, Cursor};
     use super::*;
 
-    #[test]
-    fn test_new_partition() {
-        let partition = Partition::new(String::from("topic"), 0).unwrap();//.expect("create partition dir");
-        assert_eq!(partition.partition, 0);
-        assert_eq!(partition.topic, "topic");
-    }
-
-    #[test]
-    fn test_fill_segments() {
-        let mut partition = Partition::new(String::from("topic"), 0).unwrap();
-        {
-            Segment::new(partition.path.clone(), 0).expect("new segment")
-                .open(Client::Consumer).expect("open segment");
-            Segment::new(partition.path.clone(), 1).expect("new segment")
-                .open(Client::Consumer).expect("open segment");
+    speculate! {
+        after {
+            //remove_dir_all("tmp/");
         }
 
-        partition.fill_segments().expect("fill segments");
+        test "new partition" {
+            let partition = Partition::new(String::from("tmp"), 0).unwrap();//.expect("create partition dir");
+            assert_eq!(partition.partition, 0);
+            assert_eq!(partition.topic, "tmp");
+        }
 
+        describe "segments" {
+            test "fill segments" {
+                let mut partition = Partition::new(String::from("tmp"), 0).unwrap();
+                {
+                    Segment::new(partition.path.clone(), 5).expect("new segment")
+                        .open(Client::Consumer).expect("open segment");
+                    Segment::new(partition.path.clone(), 6).expect("new segment")
+                        .open(Client::Consumer).expect("open segment");
+                }
 
-        assert_eq!(partition.segments.len(), 2);
+                partition.fill_segments().expect("fill segments");
+
+                assert_eq!(partition.segments.len(), 2);
+            }
+        }
     }
 }

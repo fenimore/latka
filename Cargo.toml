@@ -9,3 +9,6 @@ edition = "2018"
 bufstream = "0.1"
 byteorder = "1"
 getopts = "0.2.18"
+
+[dev-dependencies]
+speculate = "0.1.0"
