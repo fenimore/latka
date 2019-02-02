@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
-//#![allow(non_snake_case)]
+#![allow(unused_must_use)]
 #![allow(unused_variables)]
-//#![feature(bufreader_buffer)]
 use std::{io, fs, thread, env};
 use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use std::fs::{OpenOptions, File};
@@ -10,7 +9,7 @@ use std::io::{Seek, SeekFrom, BufReader, BufWriter,Write, Read, BufRead, Error};
 use std::io::ErrorKind::ConnectionReset;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::collections::BinaryHeap;
+use std::collections::{LinkedList, BinaryHeap};
 
 
 use crate::segment::{Segment, Offset, Client};
@@ -36,22 +35,66 @@ impl Partition {
     pub fn fill_segments(&mut self) -> io::Result<()> {
         if !self.segments.is_empty() {
             self.segments.clear();
-        }
+        };
 
         for entry in fs::read_dir(&self.path)? {
-            let entry_path = entry.unwrap().path();
-            let path = entry_path.as_path();
-            let stem = path.file_stem().unwrap();
+            let path = entry.unwrap().path();
+            let stem = path.as_path().file_stem().unwrap();
             let str_stem = stem.to_str().unwrap();
-            let offset = str_stem.parse::<Offset>().unwrap();
-            println!("{}", offset);
-            if let Ok(seg) = Segment::new(self.path.clone(), offset) {
-                self.segments.push(seg);
-            }
+            self.segments.push(
+                Segment::new(
+                    path.to_string_lossy().to_string(),
+                    str_stem.parse::<Offset>().unwrap()
+                ).unwrap()
+            )
         }
+
         Ok(())
+        //     let mut segments: Vec<(String, u64)> = fs::read_dir(&self.path)?.map(|entry| {
+        //         let path = entry.unwrap().path();
+        //         let stem = path.as_path().file_stem().unwrap();
+        //         let str_stem = stem.to_str().unwrap();
+        //         (String::from(path.to_string_lossy()), str_stem.parse::<Offset>().unwrap())
+        //     }).collect();
+
+        // segments.sort_unstable();
+
+        // for (path, off) in segments {
+        //     if let Ok(seg) = Segment::new(path, off) {
+        //         self.segments.push(seg);
+        //     }
+        // }
     }
+
+
 }
+
+
+// impl Read for Partition {
+//     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+
+//         let segment: Segment = match self.segments.pop_front() {
+//             Some(seg) => seg,
+//             None => return Ok(0),
+//         }
+//         segment.
+//         if let Some(r) = &mut self.file {
+//             return r.read(buf);
+//         }
+//         Ok(0)
+//     }
+// }
+
+// impl Seek for Partition {
+//     fn seek(&mut self, offset: SeekFrom) -> io::Result<u64> {
+
+
+//         if let Some(r) = &mut self.file {
+//             return r.seek(offset);
+//         }
+//         Ok(0)
+//     }
+// }
 
 
 
@@ -67,28 +110,34 @@ mod tests {
 
     speculate! {
         after {
-            //remove_dir_all("tmp/");
+            remove_dir_all("tmp/");
         }
 
         test "new partition" {
-            let partition = Partition::new(String::from("tmp"), 0).unwrap();//.expect("create partition dir");
+            let partition = Partition::new(String::from("tmp"), 0).unwrap();
             assert_eq!(partition.partition, 0);
             assert_eq!(partition.topic, "tmp");
         }
 
-        describe "segments" {
+        describe "fill segments" {
             test "fill segments" {
                 let mut partition = Partition::new(String::from("tmp"), 0).unwrap();
                 {
-                    Segment::new(partition.path.clone(), 5).expect("new segment")
+                    Segment::new(partition.path.clone(), 0).expect("new segment")
                         .open(Client::Consumer).expect("open segment");
-                    Segment::new(partition.path.clone(), 6).expect("new segment")
+                    Segment::new(partition.path.clone(), 1).expect("new segment")
                         .open(Client::Consumer).expect("open segment");
                 }
 
                 partition.fill_segments().expect("fill segments");
 
                 assert_eq!(partition.segments.len(), 2);
+                if let Some(segment) = partition.segments.pop() {
+                    assert_eq!(
+                        Segment::new(String::from("tmp/0000000000000000000000.log"), 0).unwrap(), segment)
+                } else {
+                    assert!(false)
+                }
             }
         }
     }

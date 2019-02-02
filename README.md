@@ -1,5 +1,9 @@
 # Kafkaesque message queue
 
+The integration tests for test file io, so they should be run on one thread
+
+   cargo test -- --test-threads 1
+
 After building the binaries (`broker`, `producer`, and `consumer`)
 
     $ broker -t topic

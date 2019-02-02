@@ -25,6 +25,7 @@ pub enum Client { // enum for opening files
 
 
 
+#[derive(Debug)]
 pub struct Segment {
     base_offset: Offset,
     filename: String,
@@ -113,7 +114,7 @@ impl PartialEq for Segment {
 
 impl Ord for Segment {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.base_offset.cmp(&other.base_offset)
+        return self.base_offset.cmp(&other.base_offset).reverse()
     }
 }
 
@@ -139,14 +140,15 @@ mod tests {
     use super::{Segment, Client};
 
     speculate! {
-        const SEGMENTPATH: &[u8] = b"tmp/";
+        const DATA: &[u8] = b"WOMBIESTWOODBINE";
+        const SEGMENTPATH: &str = "tmp/";
 
         before {
             create_dir("tmp/");
         }
 
         after {
-            //remove_dir_all("tmp/");
+            remove_dir_all("tmp/");
         }
 
         test "new segment" {
@@ -156,12 +158,10 @@ mod tests {
 
         describe "consumer" {
             test "consumer can seek" {
-                let mut segment = Segment::new(String::from("tmp/"), 0).expect("can't open segment");
+                let mut segment = Segment::new(String::from(SEGMENTPATH), 0).expect("can't open segment");
 
-                let data = String::from("wombiest");
                 segment.open(Client::Producer).expect(" open write file");
-                let bytes = String::from("wombiest");
-                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
+                let n = segment.write(DATA).expect("writing eight bytes");
                 segment.close();
 
                 segment.open(Client::Consumer).expect("open read file");
@@ -169,13 +169,12 @@ mod tests {
                 let mut buf = [0; 4];
                 let n = segment.read(&mut buf).expect("reading 4 bytes");
                 assert_eq!(n, 4);
-                assert_eq!(&buf, b"iest");
+                assert_eq!(&buf, b"IEST");
             }
             test "consumer can read" {
-                let mut segment = Segment::new(String::from("tmp/"), 1).expect("Can't open segment");
+                let mut segment = Segment::new(String::from(SEGMENTPATH), 0).expect("Can't open segment");
                 segment.open(Client::Producer).expect(" open write file");
-                let bytes = String::from("wombiest");
-                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
+                let n = segment.write(DATA).expect("writing eight bytes");
                 segment.close();
 
                 segment.open(Client::Consumer).expect("open read file");
@@ -183,32 +182,29 @@ mod tests {
                 let n = segment.read(&mut buf).expect("writing eight bytes");
 
                 assert_eq!(n, 8);
-                assert_eq!(&buf, b"wombiest");
+                assert_eq!(&buf, b"WOMBIEST");
             }
 
             test "consumer can't write" {
-                let mut segment = Segment::new(String::from("tmp/"), 2).expect("Cant open segment");
+                let mut segment = Segment::new(String::from(SEGMENTPATH), 0).expect("Cant open segment");
                 segment.open(Client::Consumer).expect("open write file");
-                let bytes = String::from("wombiest");
-                let result = segment.write(bytes.as_bytes());
+                let result = segment.write(DATA);
                 assert!(result.is_err(), "consumer shouldn't write");
             }
 
         }
         describe "producer" {
             test "producer writes" {
-                let mut segment = Segment::new(String::from("tmp/"), 3).expect("Cant open segment");
+                let mut segment = Segment::new(String::from(SEGMENTPATH), 0).expect("Cant open segment");
                 segment.open(Client::Producer).expect("open write file");
-                let bytes = String::from("wombiest");
-                let n = segment.write(bytes.as_bytes()).expect("writing eight bytes");
-                assert_eq!(n, 8);
+                let n = segment.write(DATA).expect("writing eight bytes");
+                assert_eq!(n, 16);
             }
 
             test "producer can't read" {
-                let mut segment = Segment::new(String::from("tmp/"), 4).expect("Cant open segment");
+                let mut segment = Segment::new(String::from(SEGMENTPATH), 0).expect("Cant open segment");
                 segment.open(Client::Producer).expect("open write file");
-                let bytes = String::from("wombiest");
-                segment.write(bytes.as_bytes()).expect("write to file");
+                segment.write(DATA).expect("write to file");
 
                 let mut buf = [0; 8];
                 let result = segment.read(&mut buf);
